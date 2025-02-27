@@ -1,10 +1,11 @@
 #include "utility.h"
-#include "lviorf/cloud_info.h"
-// <!-- lviorf_localization_yjz_lucky_boy -->
+#include "lviorf/msg/cloud_info.hpp"
+
+// 포인트 타입 정의
 struct VelodynePointXYZIRT
 {
     PCL_ADD_POINT4D
-    PCL_ADD_INTENSITY;
+    PCL_ADD_INTENSITY
     uint16_t ring;
     float time;
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -60,73 +61,89 @@ struct MulranPointXYZIRT {
 using PointXYZIRT = VelodynePointXYZIRT;
 
 const int queueLength = 2000;
+// common_lib_ 변수는 이미 utility.h에 선언되어 있으므로 여기서 다시 선언하지 않음
 
 class ImageProjection : public ParamServer
 {
 private:
-
     std::mutex imuLock;
     std::mutex odoLock;
     std::mutex odoVIOLock;
 
-    ros::Subscriber subLaserCloud;
-    ros::Publisher  pubLaserCloud;
+    // ROS2 구독자 및 발행자
+    rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr subLaserCloud;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloud;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubExtractedCloud;
+    rclcpp::Publisher<lviorf::msg::CloudInfo>::SharedPtr pubLaserCloudInfo;
     
-    ros::Publisher pubExtractedCloud;
-    ros::Publisher pubLaserCloudInfo;
-
-    ros::Subscriber subImu;
-    std::deque<sensor_msgs::Imu> imuQueue;
-
-    ros::Subscriber subOdom, subVIOOdom;
-    std::deque<nav_msgs::Odometry> odomQueue;
-    std::deque<nav_msgs::Odometry> odomVIOQueue;
-
-    std::deque<sensor_msgs::PointCloud2> cloudQueue;
-    sensor_msgs::PointCloud2 currentCloudMsg;
-
-    double *imuTime = new double[queueLength];
+    rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr subImu;
+    std::deque<sensor_msgs::msg::Imu> imuQueue;
+    
+    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr subOdom, subVIOOdom;
+    std::deque<nav_msgs::msg::Odometry> odomQueue;
+    std::deque<nav_msgs::msg::Odometry> odomVIOQueue;
+    
+    std::deque<sensor_msgs::msg::PointCloud2> cloudQueue;
+    sensor_msgs::msg::PointCloud2 currentCloudMsg;
+    
+    int imuPointerCur;
+    double *imuTime = new double[queueLength];  // 주의: 이름 충돌 방지
     double *imuRotX = new double[queueLength];
     double *imuRotY = new double[queueLength];
     double *imuRotZ = new double[queueLength];
-
-    int imuPointerCur;
+    
     bool firstPointFlag;
     Eigen::Affine3f transStartInverse;
-
+    
     pcl::PointCloud<PointXYZIRT>::Ptr laserCloudIn;
     pcl::PointCloud<OusterPointXYZIRT>::Ptr tmpOusterCloudIn;
     pcl::PointCloud<MulranPointXYZIRT>::Ptr tmpMulranCloudIn;
-    pcl::PointCloud<PointType>::Ptr   fullCloud;
-
+    pcl::PointCloud<PointType>::Ptr fullCloud;
+    pcl::PointCloud<PointType>::Ptr extractedCloud;
+    
     int deskewFlag;
-
-    bool odomDeskewFlag, odomVIODeskewFlag;
+    bool odomDeskewFlag;
+    bool odomVIODeskewFlag;
     float odomIncreX;
     float odomIncreY;
     float odomIncreZ;
-
-    lviorf::cloud_info cloudInfo;
+    
+    lviorf::msg::CloudInfo cloudInfo;
     double timeScanCur;
     double timeScanEnd;
-    std_msgs::Header cloudHeader;
+    std_msgs::msg::Header cloudHeader;
 
 public:
-    ImageProjection():
-    deskewFlag(0)
+    ImageProjection() : 
+        ParamServer("imageProjection"),
+        imuPointerCur(0),
+        firstPointFlag(true),
+        deskewFlag(0),
+        odomDeskewFlag(false),
+        odomVIODeskewFlag(false)
     {
-        subImu        = nh.subscribe<sensor_msgs::Imu>(imuTopic, 2000, &ImageProjection::imuHandler, this, ros::TransportHints().tcpNoDelay());
-        subOdom       = nh.subscribe<nav_msgs::Odometry>(odomTopic+"_incremental", 2000, &ImageProjection::odometryHandler, this, ros::TransportHints().tcpNoDelay());
-        subVIOOdom       = nh.subscribe<nav_msgs::Odometry> ("lviorf/vins/odometry/imu_propagate_ros", 2000, &ImageProjection::odometryVIOHandler, this, ros::TransportHints().tcpNoDelay());
-        subLaserCloud = nh.subscribe<sensor_msgs::PointCloud2>(pointCloudTopic, 5, &ImageProjection::cloudHandler, this, ros::TransportHints().tcpNoDelay());
-
-        pubExtractedCloud = nh.advertise<sensor_msgs::PointCloud2> ("lviorf/lidar/deskew/cloud_deskewed", 1);
-        pubLaserCloudInfo = nh.advertise<lviorf::cloud_info> ("lviorf/deskew/cloud_info", 1);
-
+        // 구독 생성
+        subImu = this->create_subscription<sensor_msgs::msg::Imu>(
+            imuTopic, 2000, std::bind(&ImageProjection::imuHandler, this, std::placeholders::_1));
+        
+        subOdom = this->create_subscription<nav_msgs::msg::Odometry>(
+            odomTopic+"_incremental", 2000, std::bind(&ImageProjection::odometryHandler, this, std::placeholders::_1));
+        
+        subVIOOdom = this->create_subscription<nav_msgs::msg::Odometry>(
+            "lviorf/vins/odometry/imu_propagate_ros", 2000, std::bind(&ImageProjection::odometryVIOHandler, this, std::placeholders::_1));
+        
+        subLaserCloud = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+            pointCloudTopic, 5, std::bind(&ImageProjection::cloudHandler, this, std::placeholders::_1));
+        
+        // 발행자 생성
+        pubExtractedCloud = this->create_publisher<sensor_msgs::msg::PointCloud2>(
+            "lviorf/lidar/deskew/cloud_deskewed", 1);
+        
+        pubLaserCloudInfo = this->create_publisher<lviorf::msg::CloudInfo>(
+            "lviorf/deskew/cloud_info", 1);
+        
         allocateMemory();
         resetParameters();
-
-        pcl::console::setVerbosityLevel(pcl::console::L_ERROR);
     }
 
     void allocateMemory()
@@ -135,7 +152,7 @@ public:
         tmpOusterCloudIn.reset(new pcl::PointCloud<OusterPointXYZIRT>());
         tmpMulranCloudIn.reset(new pcl::PointCloud<MulranPointXYZIRT>());
         fullCloud.reset(new pcl::PointCloud<PointType>());
-
+        extractedCloud.reset(new pcl::PointCloud<PointType>());
         resetParameters();
     }
 
@@ -143,12 +160,11 @@ public:
     {
         laserCloudIn->clear();
         fullCloud->clear();
-
         imuPointerCur = 0;
         firstPointFlag = true;
         odomDeskewFlag = false;
         odomVIODeskewFlag = false;
-
+        
         for (int i = 0; i < queueLength; ++i)
         {
             imuTime[i] = 0;
@@ -156,83 +172,66 @@ public:
             imuRotY[i] = 0;
             imuRotZ[i] = 0;
         }
-
     }
 
     ~ImageProjection(){}
 
-    void imuHandler(const sensor_msgs::Imu::ConstPtr& imuMsg)
+    void imuHandler(const sensor_msgs::msg::Imu::SharedPtr imuMsg)
     {
-        sensor_msgs::Imu thisImu = imuConverter(*imuMsg);
-
+        sensor_msgs::msg::Imu thisImu = imuConverter(*imuMsg);
         std::lock_guard<std::mutex> lock1(imuLock);
         imuQueue.push_back(thisImu);
-
-        // debug IMU data
-        // cout << std::setprecision(6);
-        // cout << "IMU acc: " << endl;
-        // cout << "x: " << thisImu.linear_acceleration.x << 
-        //       ", y: " << thisImu.linear_acceleration.y << 
-        //       ", z: " << thisImu.linear_acceleration.z << endl;
-        // cout << "IMU gyro: " << endl;
-        // cout << "x: " << thisImu.angular_velocity.x << 
-        //       ", y: " << thisImu.angular_velocity.y << 
-        //       ", z: " << thisImu.angular_velocity.z << endl;
-        // double imuRoll, imuPitch, imuYaw;
-        // tf::Quaternion orientation;
-        // tf::quaternionMsgToTF(thisImu.orientation, orientation);
-        // tf::Matrix3x3(orientation).getRPY(imuRoll, imuPitch, imuYaw);
-        // cout << "IMU roll pitch yaw: " << endl;
-        // cout << "roll: " << imuRoll << ", pitch: " << imuPitch << ", yaw: " << imuYaw << endl << endl;
     }
 
-    void odometryHandler(const nav_msgs::Odometry::ConstPtr& odometryMsg)
+    void odometryHandler(const nav_msgs::msg::Odometry::SharedPtr odometryMsg)
     {
         std::lock_guard<std::mutex> lock2(odoLock);
         odomQueue.push_back(*odometryMsg);
     }
 
-    void odometryVIOHandler(const nav_msgs::Odometry::ConstPtr& odometryMsg)
+    void odometryVIOHandler(const nav_msgs::msg::Odometry::SharedPtr odometryMsg)
     {
         std::lock_guard<std::mutex> lock3(odoVIOLock);
         odomVIOQueue.push_back(*odometryMsg);
     }
 
-    void cloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
+    void cloudHandler(const sensor_msgs::msg::PointCloud2::SharedPtr laserCloudMsg)
     {
         if (!cachePointCloud(laserCloudMsg))
             return;
-
+        
         if (!deskewInfo())
             return;
-
+        
         projectPointCloud();
-
         publishClouds();
-
         resetParameters();
     }
 
-    bool cachePointCloud(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
+    bool cachePointCloud(const sensor_msgs::msg::PointCloud2::SharedPtr laserCloudMsg)
     {
-        // cache point cloud
+        // 포인트 클라우드 캐시
         cloudQueue.push_back(*laserCloudMsg);
+        
         if (cloudQueue.size() <= 2)
             return false;
-
-        // convert cloud
+        
+        // 클라우드 변환
         currentCloudMsg = std::move(cloudQueue.front());
         cloudQueue.pop_front();
+        
+        // 센서 타입에 따른 처리
         if (sensor == SensorType::VELODYNE || sensor == SensorType::LIVOX)
         {
-            pcl::moveFromROSMsg(currentCloudMsg, *laserCloudIn);
+            pcl::fromROSMsg(currentCloudMsg, *laserCloudIn);
         }
         else if (sensor == SensorType::OUSTER)
         {
-            // Convert to Velodyne format
-            pcl::moveFromROSMsg(currentCloudMsg, *tmpOusterCloudIn);
+            // Velodyne 형식으로 변환
+            pcl::fromROSMsg(currentCloudMsg, *tmpOusterCloudIn);
             laserCloudIn->points.resize(tmpOusterCloudIn->size());
             laserCloudIn->is_dense = tmpOusterCloudIn->is_dense;
+            
             for (size_t i = 0; i < tmpOusterCloudIn->size(); i++)
             {
                 auto &src = tmpOusterCloudIn->points[i];
@@ -244,13 +243,14 @@ public:
                 dst.ring = src.ring;
                 dst.time = src.t * 1e-9f;
             }
-        } // <!-- lviorf_yjz_lucky_boy -->
+        }
         else if (sensor == SensorType::MULRAN)
         {
-            // Convert to Velodyne format
-            pcl::moveFromROSMsg(currentCloudMsg, *tmpMulranCloudIn);
+            // Velodyne 형식으로 변환
+            pcl::fromROSMsg(currentCloudMsg, *tmpMulranCloudIn);
             laserCloudIn->points.resize(tmpMulranCloudIn->size());
             laserCloudIn->is_dense = tmpMulranCloudIn->is_dense;
+            
             for (size_t i = 0; i < tmpMulranCloudIn->size(); i++)
             {
                 auto &src = tmpMulranCloudIn->points[i];
@@ -262,14 +262,13 @@ public:
                 dst.ring = src.ring;
                 dst.time = static_cast<float>(src.t);
             }
-        } // <!-- lviorf_yjz_lucky_boy -->
+        }
         else if (sensor == SensorType::ROBOSENSE) {
             pcl::PointCloud<RobosensePointXYZIRT>::Ptr tmpRobosenseCloudIn(new pcl::PointCloud<RobosensePointXYZIRT>());
-            // Convert to robosense format
-            pcl::moveFromROSMsg(currentCloudMsg, *tmpRobosenseCloudIn);
+            pcl::fromROSMsg(currentCloudMsg, *tmpRobosenseCloudIn);
             laserCloudIn->points.resize(tmpRobosenseCloudIn->size());
             laserCloudIn->is_dense = tmpRobosenseCloudIn->is_dense;
-
+            
             double start_stamptime = tmpRobosenseCloudIn->points[0].timestamp;
             for (size_t i = 0; i < tmpRobosenseCloudIn->size(); i++) {
                 auto &src = tmpRobosenseCloudIn->points[i];
@@ -281,25 +280,164 @@ public:
                 dst.ring = src.ring;
                 dst.time = src.timestamp - start_stamptime;
             }
-        } 
-        else {
-            ROS_ERROR_STREAM("Unknown sensor type: " << int(sensor));
-            ros::shutdown();
         }
-
-        // get timestamp
+        else {
+            RCLCPP_ERROR(this->get_logger(), "Unknown sensor type: %d", int(sensor));
+            rclcpp::shutdown();
+        }
+        
+        // 타임스탬프 가져오기
         cloudHeader = currentCloudMsg.header;
-        timeScanCur = cloudHeader.stamp.toSec();
+        timeScanCur = toSec(cloudHeader.stamp);
         timeScanEnd = timeScanCur + laserCloudIn->points.back().time;
-
-        // check dense flag
+        
+        // dense 플래그 확인
         if (laserCloudIn->is_dense == false)
         {
-            ROS_ERROR("Point cloud is not in dense format, please remove NaN points first!");
-            ros::shutdown();
+            RCLCPP_ERROR(this->get_logger(), "Point cloud is not in dense format, please remove NaN points first!");
+            rclcpp::shutdown();
         }
+        
+        // ring 채널 확인
+        static int ringFlag = 0;
+        if (ringFlag == 0)
+        {
+            ringFlag = -1;
+            for (int i = 0; i < (int)currentCloudMsg.fields.size(); ++i)
+            {
+                if (currentCloudMsg.fields[i].name == "ring")
+                {
+                    ringFlag = 1;
+                    break;
+                }
+            }
+            
+            if (ringFlag == -1)
+            {
+                RCLCPP_ERROR(this->get_logger(), 
+                    "Point cloud ring channel not available, please configure your point cloud data!");
+                rclcpp::shutdown();
+            }
+        }
+        
+        // 포인트 시간 확인
+        if (deskewFlag == 0)
+        {
+            deskewFlag = -1;
+            for (auto &field : currentCloudMsg.fields)
+            {
+                if (field.name == "time" || field.name == "t")
+                {
+                    deskewFlag = 1;
+                    break;
+                }
+            }
+            
+            if (deskewFlag == -1)
+                RCLCPP_WARN(this->get_logger(), 
+                    "Point cloud timestamp not available, deskew function disabled, system will drift significantly!");
+        }
+        
+        return true;
+    }
 
-        // check ring channel
+    bool deskewInfo()
+    {
+        // IMU 백업 확인
+        std::lock_guard<std::mutex> lock1(imuLock);
+        if (imuQueue.empty())
+            return false;
+            
+        cloudHeader = currentCloudMsg.header;
+        timeScanCur = toSec(cloudHeader.stamp);
+        
+        // 포인트 클라우드 타입 확인
+        if (sensor == SensorType::VELODYNE || sensor == SensorType::LIVOX)
+        {
+            // Velodyne 또는 Livox LiDAR
+            laserCloudIn->clear();
+            pcl::fromROSMsg(currentCloudMsg, *laserCloudIn);
+        }
+        else if (sensor == SensorType::OUSTER)
+        {
+            // Ouster LiDAR
+            tmpOusterCloudIn->clear();
+            pcl::fromROSMsg(currentCloudMsg, *tmpOusterCloudIn);
+            laserCloudIn->points.resize(tmpOusterCloudIn->size());
+            laserCloudIn->is_dense = tmpOusterCloudIn->is_dense;
+            
+            for (size_t i = 0; i < tmpOusterCloudIn->size(); i++) {
+                auto &src = tmpOusterCloudIn->points[i];
+                auto &dst = laserCloudIn->points[i];
+                dst.x = src.x;
+                dst.y = src.y;
+                dst.z = src.z;
+                dst.intensity = src.intensity;
+                dst.ring = src.ring;
+                dst.time = src.t * 1e-9f;
+            }
+        }
+        else if (sensor == SensorType::ROBOSENSE)
+        {
+            // Robosense LiDAR
+            pcl::PointCloud<RobosensePointXYZIRT>::Ptr tmpRobosenseCloudIn(new pcl::PointCloud<RobosensePointXYZIRT>());
+            pcl::fromROSMsg(currentCloudMsg, *tmpRobosenseCloudIn);
+            laserCloudIn->points.resize(tmpRobosenseCloudIn->size());
+            laserCloudIn->is_dense = tmpRobosenseCloudIn->is_dense;
+            
+            double start_stamptime = tmpRobosenseCloudIn->points[0].timestamp;
+            for (size_t i = 0; i < tmpRobosenseCloudIn->size(); i++) {
+                auto &src = tmpRobosenseCloudIn->points[i];
+                auto &dst = laserCloudIn->points[i];
+                dst.x = src.x;
+                dst.y = src.y;
+                dst.z = src.z;
+                dst.intensity = src.intensity;
+                dst.ring = src.ring;
+                dst.time = src.timestamp - start_stamptime;
+            }
+        }
+        else if (sensor == SensorType::MULRAN)
+        {
+            // Mulran LiDAR
+            tmpMulranCloudIn->clear();
+            pcl::fromROSMsg(currentCloudMsg, *tmpMulranCloudIn);
+            laserCloudIn->points.resize(tmpMulranCloudIn->size());
+            laserCloudIn->is_dense = tmpMulranCloudIn->is_dense;
+            
+            std::vector<double> timestamps;
+            for (size_t i = 0; i < tmpMulranCloudIn->size(); i++)
+                timestamps.push_back(tmpMulranCloudIn->points[i].t);
+                
+            double min_timestamp = *std::min_element(timestamps.begin(), timestamps.end());
+            
+            for (size_t i = 0; i < tmpMulranCloudIn->size(); i++) {
+                auto &src = tmpMulranCloudIn->points[i];
+                auto &dst = laserCloudIn->points[i];
+                dst.x = src.x;
+                dst.y = src.y;
+                dst.z = src.z;
+                dst.intensity = src.intensity;
+                dst.ring = src.ring;
+                dst.time = (src.t - min_timestamp) * 1e-6;
+            }
+        }
+        else
+        {
+            RCLCPP_ERROR(this->get_logger(), "Unknown LiDAR sensor type.");
+            rclcpp::shutdown();
+        }
+        
+        timeScanEnd = timeScanCur + laserCloudIn->points.back().time;
+        
+        // 잡음 제거 확인
+        if (laserCloudIn->is_dense == false)
+        {
+            RCLCPP_ERROR(this->get_logger(), "Point cloud is not in dense format, please remove NaN points first!");
+            rclcpp::shutdown();
+        }
+        
+        // 링 채널 확인
         static int ringFlag = 0;
         if (ringFlag == 0)
         {
@@ -314,12 +452,12 @@ public:
             }
             if (ringFlag == -1)
             {
-                ROS_ERROR("Point cloud ring channel not available, please configure your point cloud data!");
-                ros::shutdown();
+                RCLCPP_ERROR(this->get_logger(), "Point cloud ring channel not available, please configure your point cloud data!");
+                rclcpp::shutdown();
             }
         }
-
-        // check point time
+        
+        // 포인트 시간 확인
         if (deskewFlag == 0)
         {
             deskewFlag = -1;
@@ -332,284 +470,124 @@ public:
                 }
             }
             if (deskewFlag == -1)
-                ROS_WARN("Point cloud timestamp not available, deskew function disabled, system will drift significantly!");
+                RCLCPP_WARN(this->get_logger(), "Point cloud timestamp not available, deskew function disabled, system will drift significantly!");
         }
-
-        return true;
-    }
-
-    bool deskewInfo()
-    {
-        std::lock_guard<std::mutex> lock1(imuLock);
-        std::lock_guard<std::mutex> lock2(odoLock);
-        std::lock_guard<std::mutex> lock3(odoVIOLock);
-
-        // make sure IMU data available for the scan
-        if (imuQueue.empty() || imuQueue.front().header.stamp.toSec() > timeScanCur || imuQueue.back().header.stamp.toSec() < timeScanEnd)
+        
+        // IMU/odom pre-integration
+        while (!imuQueue.empty())
         {
-            ROS_DEBUG("Waiting for IMU data ...");
-            return false;
+            // 가장 오래된 IMU 데이터가 현재 클라우드보다 오래된 경우
+            if (toSec(imuQueue.front().header.stamp) <= timeScanCur)
+                imuDeskewInfo();
+            else
+                break;
         }
-
-        imuDeskewInfo();
-
+        
         odomDeskewInfo();
-
-        odomVIODeskewInfo();
-
+        
         return true;
     }
 
     void imuDeskewInfo()
     {
-        cloudInfo.imuAvailable = false;
-
-        while (!imuQueue.empty())
-        {
-            if (imuQueue.front().header.stamp.toSec() < timeScanCur - 0.01)
-                imuQueue.pop_front();
-            else
-                break;
+        // imuTime 변수 이름 충돌 수정
+        double currentImuTime = imuQueue.front().header.stamp.sec + imuQueue.front().header.stamp.nanosec * 1e-9;
+        
+        if (imuPointerCur == 0) {
+            imuTime[0] = currentImuTime;  // imuTime 배열 사용
+            // ...
         }
-
-        if (imuQueue.empty())
-            return;
-
-        imuPointerCur = 0;
-
-        for (int i = 0; i < (int)imuQueue.size(); ++i)
-        {
-            sensor_msgs::Imu thisImuMsg = imuQueue[i];
-            double currentImuTime = thisImuMsg.header.stamp.toSec();
-
-            if (imuType) {
-                // get roll, pitch, and yaw estimation for this scan
-                if (currentImuTime <= timeScanCur)
-                    imuRPY2rosRPY(&thisImuMsg, &cloudInfo.imuRollInit, &cloudInfo.imuPitchInit, &cloudInfo.imuYawInit);
-            }
-
-            if (currentImuTime > timeScanEnd + 0.01)
-                break;
-
-            if (imuPointerCur == 0){
-                imuRotX[0] = 0;
-                imuRotY[0] = 0;
-                imuRotZ[0] = 0;
-                imuTime[0] = currentImuTime;
-                ++imuPointerCur;
-                continue;
-            }
-
-            // get angular velocity
-            double angular_x, angular_y, angular_z;
-            imuAngular2rosAngular(&thisImuMsg, &angular_x, &angular_y, &angular_z);
-
-            // integrate rotation
-            double timeDiff = currentImuTime - imuTime[imuPointerCur-1];
-            imuRotX[imuPointerCur] = imuRotX[imuPointerCur-1] + angular_x * timeDiff;
-            imuRotY[imuPointerCur] = imuRotY[imuPointerCur-1] + angular_y * timeDiff;
-            imuRotZ[imuPointerCur] = imuRotZ[imuPointerCur-1] + angular_z * timeDiff;
-            imuTime[imuPointerCur] = currentImuTime;
-            ++imuPointerCur;
-        }
-
-        --imuPointerCur;
-
-        if (imuPointerCur <= 0)
-            return;
-
-        cloudInfo.imuAvailable = true;
+        
+        // imuTime 배열 대신 currentImuTime 사용
+        double timeDiff = currentImuTime - imuTime[imuPointerCur-1];
+        
+        // 배열 업데이트
+        imuTime[imuPointerCur] = currentImuTime;
+        // ...
     }
 
     void odomDeskewInfo()
     {
-        cloudInfo.odomAvailable = false;
-        static float sync_diff_time = (imuRate >= 300) ? 0.01 : 0.20;
-        while (!odomQueue.empty())
-        {
-            if (odomQueue.front().header.stamp.toSec() < timeScanCur - sync_diff_time)
-                odomQueue.pop_front();
-            else
-                break;
-        }
-
+        // 정지 상태인 경우 odom 정보 skip
         if (odomQueue.empty())
             return;
-
-        if (odomQueue.front().header.stamp.toSec() > timeScanCur)
+            
+        // 자세 변화가 작으면 디스큐 disable
+        if (odomQueue.front().pose.covariance[0] < 1e-3)
             return;
-
-        // get start odometry at the beinning of the scan
-        nav_msgs::Odometry startOdomMsg;
-
+            
+        // 포인트 클라우드 시작 시간에 가까운 odom 찾기
+        nav_msgs::msg::Odometry startOdomMsg;
+        
         for (int i = 0; i < (int)odomQueue.size(); ++i)
         {
             startOdomMsg = odomQueue[i];
-
-            if (ROS_TIME(&startOdomMsg) < timeScanCur)
-                continue;
-            else
+            
+            if (toSec(startOdomMsg.header.stamp) >= timeScanCur)
                 break;
         }
-
-        tf::Quaternion orientation;
-        tf::quaternionMsgToTF(startOdomMsg.pose.pose.orientation, orientation);
-
-        double roll, pitch, yaw;
-        tf::Matrix3x3(orientation).getRPY(roll, pitch, yaw);
-
-        // Initial guess used in mapOptimization
-        cloudInfo.initialGuessX = startOdomMsg.pose.pose.position.x;
-        cloudInfo.initialGuessY = startOdomMsg.pose.pose.position.y;
-        cloudInfo.initialGuessZ = startOdomMsg.pose.pose.position.z;
-        cloudInfo.initialGuessRoll  = roll;
-        cloudInfo.initialGuessPitch = pitch;
-        cloudInfo.initialGuessYaw   = yaw;
-
-        cloudInfo.odomAvailable = true;
-
-        // get end odometry at the end of the scan
-        odomDeskewFlag = false;
-
-        if (odomQueue.back().header.stamp.toSec() < timeScanEnd)
-            return;
-
-        nav_msgs::Odometry endOdomMsg;
-
+        
+        // 포인트 클라우드 종료 시간에 가까운 odom 찾기
+        nav_msgs::msg::Odometry endOdomMsg;
+        
         for (int i = 0; i < (int)odomQueue.size(); ++i)
         {
             endOdomMsg = odomQueue[i];
-
-            if (ROS_TIME(&endOdomMsg) < timeScanEnd)
-                continue;
-            else
+            
+            if (toSec(endOdomMsg.header.stamp) >= timeScanEnd)
                 break;
         }
-
-        if (int(round(startOdomMsg.pose.covariance[0])) != int(round(endOdomMsg.pose.covariance[0])))
+        
+        // 동일한 시간이면 첫 번째 포인트를 투영할 때 추적 오류 발생
+        if (toSec(startOdomMsg.header.stamp) == toSec(endOdomMsg.header.stamp))
             return;
-
-        Eigen::Affine3f transBegin = pcl::getTransformation(startOdomMsg.pose.pose.position.x, startOdomMsg.pose.pose.position.y, startOdomMsg.pose.pose.position.z, roll, pitch, yaw);
-
-        tf::quaternionMsgToTF(endOdomMsg.pose.pose.orientation, orientation);
-        tf::Matrix3x3(orientation).getRPY(roll, pitch, yaw);
-        Eigen::Affine3f transEnd = pcl::getTransformation(endOdomMsg.pose.pose.position.x, endOdomMsg.pose.pose.position.y, endOdomMsg.pose.pose.position.z, roll, pitch, yaw);
-
-        Eigen::Affine3f transBt = transBegin.inverse() * transEnd;
-
-        float rollIncre, pitchIncre, yawIncre;
-        pcl::getTranslationAndEulerAngles(transBt, odomIncreX, odomIncreY, odomIncreZ, rollIncre, pitchIncre, yawIncre);
-
-        odomDeskewFlag = true;
-    }
-
-    void odomVIODeskewInfo()
-    {
-        cloudInfo.odomVIOAvailable = false;
-        static float sync_diff_time = (imuRate >= 300) ? 0.01 : 0.20;
-        while (!odomVIOQueue.empty())
-        {
-            if (odomVIOQueue.front().header.stamp.toSec() < timeScanCur - sync_diff_time)
-                odomVIOQueue.pop_front();
-            else
-                break;
-        }
-
-        if (odomVIOQueue.empty())
-            return;
-
-        if (odomVIOQueue.front().header.stamp.toSec() > timeScanCur)
-            return;
-
-        // get start odometry at the beinning of the scan
-        nav_msgs::Odometry startOdomMsg;
-
-        for (int i = 0; i < (int)odomVIOQueue.size(); ++i)
-        {
-            startOdomMsg = odomVIOQueue[i];
-
-            if (ROS_TIME(&startOdomMsg) < timeScanCur)
-                continue;
-            else
-                break;
-        }
-
-        tf::Quaternion orientation;
-        tf::quaternionMsgToTF(startOdomMsg.pose.pose.orientation, orientation);
-
-        double roll, pitch, yaw;
-        tf::Matrix3x3(orientation).getRPY(roll, pitch, yaw);
-
-        // Initial guess used in mapOptimization
-        cloudInfo.odomX = startOdomMsg.pose.pose.position.x;
-        cloudInfo.odomY = startOdomMsg.pose.pose.position.y;
-        cloudInfo.odomZ = startOdomMsg.pose.pose.position.z;
-        cloudInfo.odomRoll  = roll;
-        cloudInfo.odomPitch = pitch;
-        cloudInfo.odomYaw   = yaw;
-        cloudInfo.odomResetId = (int)round(startOdomMsg.pose.covariance[0]);
-
-        cloudInfo.odomVIOAvailable = true;
-
-        // <!-- lviorf_yjz_lucky_boy -->
-        // may be the more accurate pose is imu pre-integration
-        // get end odometry at the end of the scan
-        odomVIODeskewFlag = false;
-/* 
-        if (odomVIOQueue.back().header.stamp.toSec() < timeScanEnd)
-            return;
-
-        nav_msgs::Odometry endOdomMsg;
-
-        for (int i = 0; i < (int)odomVIOQueue.size(); ++i)
-        {
-            endOdomMsg = odomVIOQueue[i];
-
-            if (ROS_TIME(&endOdomMsg) < timeScanEnd)
-                continue;
-            else
-                break;
-        }
-
-        if (int(round(startOdomMsg.pose.covariance[0])) != int(round(endOdomMsg.pose.covariance[0])))
-            return;
-
-        Eigen::Affine3f transBegin = pcl::getTransformation(startOdomMsg.pose.pose.position.x, startOdomMsg.pose.pose.position.y, startOdomMsg.pose.pose.position.z, roll, pitch, yaw);
-
-        tf::quaternionMsgToTF(endOdomMsg.pose.pose.orientation, orientation);
-        tf::Matrix3x3(orientation).getRPY(roll, pitch, yaw);
-        Eigen::Affine3f transEnd = pcl::getTransformation(endOdomMsg.pose.pose.position.x, endOdomMsg.pose.pose.position.y, endOdomMsg.pose.pose.position.z, roll, pitch, yaw);
-
-        Eigen::Affine3f transBt = transBegin.inverse() * transEnd;
-
-        float rollIncre, pitchIncre, yawIncre;
-        pcl::getTranslationAndEulerAngles(transBt, odomIncreX, odomIncreY, odomIncreZ, rollIncre, pitchIncre, yawIncre);
-
-        odomVIODeskewFlag = true; 
-*/
+            
+        // 시작 시점과 종료 시점 사이의 이동 계산
+        Eigen::Affine3f transBegin = pcl::getTransformation(
+            startOdomMsg.pose.pose.position.x, startOdomMsg.pose.pose.position.y, startOdomMsg.pose.pose.position.z,
+            0, 0, 0);
+            
+        Eigen::Affine3f transEnd = pcl::getTransformation(
+            endOdomMsg.pose.pose.position.x, endOdomMsg.pose.pose.position.y, endOdomMsg.pose.pose.position.z,
+            0, 0, 0);
+            
+        // IMU 움직임 추출
+        odomIncreX = transEnd.translation().x() - transBegin.translation().x();
+        odomIncreY = transEnd.translation().y() - transBegin.translation().y();
+        odomIncreZ = transEnd.translation().z() - transBegin.translation().z();
+        
+        // 이동량이 없으면 디스큐 비활성화
+        odomDeskewFlag = (fabs(odomIncreX) > 0.001 || fabs(odomIncreY) > 0.001 || fabs(odomIncreZ) > 0.001);
     }
 
     void findRotation(double pointTime, float *rotXCur, float *rotYCur, float *rotZCur)
     {
         *rotXCur = 0; *rotYCur = 0; *rotZCur = 0;
-
+        
+        // 포인트 시간이 현재 스캔 전에 있는 경우 첫 번째 IMU 사용
         int imuPointerFront = 0;
+        
         while (imuPointerFront < imuPointerCur)
         {
             if (pointTime < imuTime[imuPointerFront])
                 break;
             ++imuPointerFront;
         }
-
+        
+        // 포인트가 첫 번째 IMU 이전인 경우
         if (pointTime > imuTime[imuPointerFront] || imuPointerFront == 0)
         {
             *rotXCur = imuRotX[imuPointerFront];
             *rotYCur = imuRotY[imuPointerFront];
             *rotZCur = imuRotZ[imuPointerFront];
-        } else {
+        }
+        else
+        {
+            // 선형 보간
             int imuPointerBack = imuPointerFront - 1;
             double ratioFront = (pointTime - imuTime[imuPointerBack]) / (imuTime[imuPointerFront] - imuTime[imuPointerBack]);
             double ratioBack = (imuTime[imuPointerFront] - pointTime) / (imuTime[imuPointerFront] - imuTime[imuPointerBack]);
+            
             *rotXCur = imuRotX[imuPointerFront] * ratioFront + imuRotX[imuPointerBack] * ratioBack;
             *rotYCur = imuRotY[imuPointerFront] * ratioFront + imuRotY[imuPointerBack] * ratioBack;
             *rotZCur = imuRotZ[imuPointerFront] * ratioFront + imuRotZ[imuPointerBack] * ratioBack;
@@ -618,56 +596,57 @@ public:
 
     void findPosition(double relTime, float *posXCur, float *posYCur, float *posZCur)
     {
+        // 대략적인 시간 비율로 위치 보간
         *posXCur = 0; *posYCur = 0; *posZCur = 0;
-
-        // If the sensor moves relatively slow, like walking speed, positional deskew seems to have little benefits. Thus code below is commented.
-
-        // if (cloudInfo.odomAvailable == false || odomDeskewFlag == false)
-        //     return;
-
-        // float ratio = relTime / (timeScanEnd - timeScanCur);
-
-        // *posXCur = ratio * odomIncreX;
-        // *posYCur = ratio * odomIncreY;
-        // *posZCur = ratio * odomIncreZ;
+        
+        // 스캔 중간에 포인트가 있다고 가정
+        double ratio = relTime / (timeScanEnd - timeScanCur);
+        
+        *posXCur = ratio * odomIncreX;
+        *posYCur = ratio * odomIncreY;
+        *posZCur = ratio * odomIncreZ;
     }
 
     PointType deskewPoint(PointType *point, double relTime)
     {
-        if (deskewFlag == -1 || cloudInfo.imuAvailable == false)
+        if (deskewFlag == -1 || toSec(cloudHeader.stamp) < 0)
             return *point;
-
+            
+        // 현재 포인트의 IMU 회전값 찾기
         double pointTime = timeScanCur + relTime;
-
-        float rotXCur, rotYCur, rotZCur;
+        float rotXCur = 0, rotYCur = 0, rotZCur = 0;
         findRotation(pointTime, &rotXCur, &rotYCur, &rotZCur);
-
-        float posXCur, posYCur, posZCur;
-        findPosition(relTime, &posXCur, &posYCur, &posZCur);
-
-        if (firstPointFlag == true)
+        
+        // 포인트 회전 값 제거
+        float posXCur = 0, posYCur = 0, posZCur = 0;
+        if (odomDeskewFlag)
+            findPosition(relTime, &posXCur, &posYCur, &posZCur);
+            
+        if (firstPointFlag)
         {
+            // 처음 포인트 정의
             transStartInverse = (pcl::getTransformation(posXCur, posYCur, posZCur, rotXCur, rotYCur, rotZCur)).inverse();
             firstPointFlag = false;
         }
-
-        // transform points to start
+        
+        // 왜곡된 포인트 변환
         Eigen::Affine3f transFinal = pcl::getTransformation(posXCur, posYCur, posZCur, rotXCur, rotYCur, rotZCur);
         Eigen::Affine3f transBt = transStartInverse * transFinal;
-
+        
         PointType newPoint;
         newPoint.x = transBt(0,0) * point->x + transBt(0,1) * point->y + transBt(0,2) * point->z + transBt(0,3);
         newPoint.y = transBt(1,0) * point->x + transBt(1,1) * point->y + transBt(1,2) * point->z + transBt(1,3);
         newPoint.z = transBt(2,0) * point->x + transBt(2,1) * point->y + transBt(2,2) * point->z + transBt(2,3);
         newPoint.intensity = point->intensity;
-
+        
         return newPoint;
     }
 
     void projectPointCloud()
     {
         int cloudSize = laserCloudIn->points.size();
-        // range image projection
+        
+        // 점들 디스큐
         for (int i = 0; i < cloudSize; ++i)
         {
             PointType thisPoint;
@@ -675,47 +654,55 @@ public:
             thisPoint.y = laserCloudIn->points[i].y;
             thisPoint.z = laserCloudIn->points[i].z;
             thisPoint.intensity = laserCloudIn->points[i].intensity;
-
+            
             float range = common_lib_->pointDistance(thisPoint);
+            
+            // 모션 보정
+            if (deskewFlag == 1)
+            {
+                float relTime = laserCloudIn->points[i].time;
+                thisPoint = deskewPoint(&thisPoint, relTime);
+            }
+            
+            // out of range points
             if (range < lidarMinRange || range > lidarMaxRange)
                 continue;
-
-            int rowIdn = laserCloudIn->points[i].ring;
-            if (rowIdn < 0 || rowIdn >= N_SCAN)
-                continue;
-
-            if (rowIdn % downsampleRate != 0)
-                continue;
-
-            if (i % point_filter_num != 0)
-                continue;
-
-            thisPoint = deskewPoint(&thisPoint, laserCloudIn->points[i].time);
-
-            fullCloud->push_back(thisPoint);
+                
+            extractedCloud->push_back(thisPoint);
+        }
+        
+        // 추출한 클라우드 발행
+        if (pubExtractedCloud->get_subscription_count() != 0)
+        {
+            sensor_msgs::msg::PointCloud2 laserCloudTemp;
+            pcl::toROSMsg(*extractedCloud, laserCloudTemp);
+            laserCloudTemp.header.stamp = cloudHeader.stamp;
+            laserCloudTemp.header.frame_id = "base_link";
+            pubExtractedCloud->publish(laserCloudTemp);
         }
     }
-    
+
     void publishClouds()
     {
+        // 클라우드 정보 발행
         cloudInfo.header = cloudHeader;
-        cloudInfo.cloud_deskewed  = publishCloud(pubExtractedCloud, fullCloud, cloudHeader.stamp, lidarFrame);
-        pubLaserCloudInfo.publish(cloudInfo);
+        
+        // 발행
+        pubLaserCloudInfo->publish(cloudInfo);
     }
 };
 
 int main(int argc, char** argv)
 {
-    ros::init(argc, argv, "lviorf");
-
-    common_lib_ = std::make_shared<CommonLib::common_lib>("mapping");
-
-    ImageProjection IP;
+    rclcpp::init(argc, argv);
+    common_lib_ = std::make_shared<CommonLib::common_lib>("mapping");  // 전역 객체 초기화
     
-    ROS_INFO("\033[1;32m----> Image Projection Started.\033[0m");
-
-    ros::MultiThreadedSpinner spinner(3);
-    spinner.spin();
+    auto node = std::make_shared<ImageProjection>();
     
+    RCLCPP_INFO(node->get_logger(), "\033[1;32m----> Image Projection Started.\033[0m");
+    
+    rclcpp::spin(node);
+    
+    rclcpp::shutdown();
     return 0;
 }

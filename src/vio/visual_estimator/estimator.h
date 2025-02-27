@@ -1,7 +1,22 @@
 #pragma once
 
-#include "parameters.h"
+#include "rclcpp/rclcpp.hpp"
+#include "sensor_msgs/msg/point_cloud.hpp"
+#include "sensor_msgs/msg/image.hpp"
+#include "sensor_msgs/msg/imu.hpp"
+#include "nav_msgs/msg/odometry.hpp"
+#include "nav_msgs/msg/path.hpp"
+#include "visualization_msgs/msg/marker.hpp"
+#include "tf2_ros/transform_broadcaster.h"
+
+#include <opencv2/opencv.hpp>
+#include <Eigen/Dense>
+#include <ceres/ceres.h>
+
 #include "feature_manager.h"
+#include "integration_base.h"
+#include "parameters.h"
+
 #include "utility/utility.h"
 #include "utility/tic_toc.h"
 #include "initial/solve_5pts.h"
@@ -11,30 +26,22 @@
 #include <std_msgs/Header.h>
 #include <std_msgs/Float32.h>
 
-#include <ceres/ceres.h>
-#include "factor/imu_factor.h"
-#include "factor/pose_local_parameterization.h"
-#include "factor/projection_factor.h"
-#include "factor/projection_td_factor.h"
-#include "factor/marginalization_factor.h"
-
 #include <unordered_map>
 #include <queue>
 #include <opencv2/core/eigen.hpp>
 
 
-class Estimator
+class Estimator : public rclcpp::Node
 {
   public:
     Estimator();
+    ~Estimator() = default;
 
     void setParameter();
 
     // interface
-    void processIMU(double t, const Vector3d &linear_acceleration, const Vector3d &angular_velocity);
-    void processImage(const map<int, vector<pair<int, Eigen::Matrix<double, 8, 1>>>> &image, 
-                      const vector<float> &lidar_initialization_info,
-                      const std_msgs::Header &header);
+    void processIMU(const std::vector<std::pair<double, sensor_msgs::msg::Imu::SharedPtr>> &imu_msgs);
+    void processImage(const std::pair<double, std::map<int, std::vector<std::pair<int, Eigen::Matrix<double, 7, 1>>>> &feature);
 
     // internal
     void clearState();
@@ -125,4 +132,26 @@ class Estimator
     IntegrationBase *tmp_pre_integration;
 
     int failureCount;
+
+    // ROS2 퍼블리셔/서브스크라이버
+    rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_odometry;
+    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pub_path;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud>::SharedPtr pub_point_cloud;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud>::SharedPtr pub_margin_cloud;
+    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr pub_key_poses;
+    
+    rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu;
+    rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr sub_image;
+    
+    rclcpp::TimerBase::SharedPtr process_timer_;
+    std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
+    
+    // 기존 멤버 변수들 유지
+    std::mutex mtx_imu;
+    std::mutex mtx_feature;
+    
+    std::queue<std::pair<double, sensor_msgs::msg::Imu::SharedPtr>> imu_buf;
+    std::queue<std::pair<double, std::map<int, std::vector<std::pair<int, Eigen::Matrix<double, 7, 1>>>>>> feature_buf;
+    
+    nav_msgs::msg::Path path;
 };

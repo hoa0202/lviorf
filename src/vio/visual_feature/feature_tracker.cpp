@@ -1,6 +1,10 @@
 #include "feature_tracker.h"
+#include "rclcpp/rclcpp.hpp"
 
 int FeatureTracker::n_id = 0;
+
+std::map<int, std::vector<cv::Point2f>> prev_un_pts_map;
+std::map<int, std::vector<cv::Point2f>> cur_un_pts_map;
 
 bool inBorder(const cv::Point2f &pt)
 {
@@ -28,9 +32,97 @@ void reduceVector(vector<int> &v, vector<uchar> status)
     v.resize(j);
 }
 
-
-FeatureTracker::FeatureTracker()
+FeatureTracker::FeatureTracker(const rclcpp::NodeOptions& options)
+    : Node("feature_tracker", options)
 {
+    this->declare_parameter("max_cnt", 150);
+    this->declare_parameter("min_dist", 30);
+    this->declare_parameter("freq", 10);
+    this->declare_parameter("show_track", true);
+    
+    this->get_parameter("max_cnt", MAX_CNT);
+    this->get_parameter("min_dist", MIN_DIST);
+    this->get_parameter("freq", FREQ);
+    this->get_parameter("show_track", SHOW_TRACK);
+    
+    pub_img = this->create_publisher<sensor_msgs::msg::Image>("feature_img", 1000);
+    pub_features = this->create_publisher<sensor_msgs::msg::PointCloud>("feature", 1000);
+    
+    sub_img = this->create_subscription<sensor_msgs::msg::Image>(
+        "camera/image_raw", 100,
+        std::bind(&FeatureTracker::img_callback, this, std::placeholders::_1));
+    
+    n_id = 0;
+    first_image_flag = true;
+    hasPrediction = false;
+    use_lidar = false;
+    lidar_cloud.reset(new pcl::PointCloud<PointType>());
+}
+
+void FeatureTracker::img_callback(const sensor_msgs::msg::Image::SharedPtr img_msg)
+{
+    double cur_time = rclcpp::Time(img_msg->header.stamp).seconds();
+    if (first_image_flag)
+    {
+        first_image_flag = false;
+        first_image_time = cur_time;
+        return;
+    }
+    
+    // 이미지 처리 주파수 제한
+    if (round(1.0 * pub_count / (cur_time - first_image_time)) <= FREQ)
+    {
+        pub_count++;
+        
+        cv_bridge::CvImageConstPtr ptr = cv_bridge::toCvShare(img_msg, "bgr8");
+        cv::Mat show_img = ptr->image;
+        
+        // 특징점 추적 로직
+        cv::Mat gray;
+        cv::cvtColor(show_img, gray, cv::COLOR_BGR2GRAY);
+        
+        std::vector<cv::Point2f> n_pts;
+        if (cur_pts.size() > 0)
+        {
+            std::vector<uchar> status;
+            std::vector<float> err;
+            cv::calcOpticalFlowPyrLK(prev_gray, gray, prev_pts, cur_pts, status, err);
+            
+            // 특징점 필터링 로직...
+        }
+        
+        // 새 특징점 검출 로직...
+        
+        prev_gray = gray.clone();
+        prev_pts = cur_pts;
+        
+        // PointCloud 메시지 생성 및 발행
+        sensor_msgs::msg::PointCloud feature_points;
+        feature_points.header = img_msg->header;
+        
+        for (auto &pt : cur_pts)
+        {
+            geometry_msgs::msg::Point32 p;
+            p.x = pt.x;
+            p.y = pt.y;
+            p.z = 1;
+            
+            feature_points.points.push_back(p);
+        }
+        
+        pub_features->publish(feature_points);
+        
+        // 트래킹 결과 시각화
+        if (SHOW_TRACK)
+        {
+            for (auto &pt : cur_pts)
+                cv::circle(show_img, pt, 2, cv::Scalar(0, 255, 0), -1);
+            
+            sensor_msgs::msg::Image::SharedPtr track_img = 
+                cv_bridge::CvImage(img_msg->header, "bgr8", show_img).toImageMsg();
+            pub_img->publish(*track_img);
+        }
+    }
 }
 
 void FeatureTracker::setMask()
@@ -89,7 +181,7 @@ void FeatureTracker::readImage(const cv::Mat &_img, double _cur_time)
         cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(3.0, cv::Size(8, 8));
         TicToc t_c;
         clahe->apply(_img, img);
-        ROS_DEBUG("CLAHE costs: %fms", t_c.toc());
+        // RCLCPP_DEBUG(this->get_logger(), "CLAHE costs: %fms", t_c.toc());
     }
     else
         img = _img;
@@ -121,7 +213,7 @@ void FeatureTracker::readImage(const cv::Mat &_img, double _cur_time)
         reduceVector(ids, status);
         reduceVector(cur_un_pts, status);
         reduceVector(track_cnt, status);
-        ROS_DEBUG("temporal optical flow costs: %fms", t_o.toc());
+        // RCLCPP_DEBUG(this->get_logger(), "temporal optical flow costs: %fms", t_o.toc());
     }
 
     for (auto &n : track_cnt)
@@ -130,32 +222,35 @@ void FeatureTracker::readImage(const cv::Mat &_img, double _cur_time)
     if (PUB_THIS_FRAME)
     {
         rejectWithF();
-        ROS_DEBUG("set mask begins");
+        // RCLCPP_DEBUG(this->get_logger(), "set mask begins");
         TicToc t_m;
         setMask();
-        ROS_DEBUG("set mask costs %fms", t_m.toc());
+        // RCLCPP_DEBUG(this->get_logger(), "set mask costs %fms", t_m.toc());
 
-        ROS_DEBUG("detect feature begins");
+        // RCLCPP_DEBUG(this->get_logger(), "detect feature begins");
         TicToc t_t;
         int n_max_cnt = MAX_CNT - static_cast<int>(forw_pts.size());
         if (n_max_cnt > 0)
         {
             if(mask.empty())
-                cout << "mask is empty " << endl;
+                // cout << "mask is empty " << endl;
+                RCLCPP_WARN(this->get_logger(), "mask is empty");
             if (mask.type() != CV_8UC1)
-                cout << "mask type wrong " << endl;
+                // cout << "mask type wrong " << endl;
+                RCLCPP_WARN(this->get_logger(), "mask type wrong");
             if (mask.size() != forw_img.size())
-                cout << "wrong size " << endl;
+                // cout << "wrong size " << endl;
+                RCLCPP_WARN(this->get_logger(), "wrong size");
             cv::goodFeaturesToTrack(forw_img, n_pts, MAX_CNT - forw_pts.size(), 0.01, MIN_DIST, mask);
         }
         else
             n_pts.clear();
-        ROS_DEBUG("detect feature costs: %fms", t_t.toc());
+        // RCLCPP_DEBUG(this->get_logger(), "detect feature costs: %fms", t_t.toc());
 
-        ROS_DEBUG("add feature begins");
+        // RCLCPP_DEBUG(this->get_logger(), "add feature begins");
         TicToc t_a;
         addPoints();
-        ROS_DEBUG("selectFeature costs: %fms", t_a.toc());
+        // RCLCPP_DEBUG(this->get_logger(), "selectFeature costs: %fms", t_a.toc());
     }
     prev_img = cur_img;
     prev_pts = cur_pts;
@@ -164,13 +259,57 @@ void FeatureTracker::readImage(const cv::Mat &_img, double _cur_time)
     cur_pts = forw_pts;
     undistortedPoints();
     prev_time = cur_time;
+
+    // 수정: prev_un_pts_map과 cur_un_pts_map 업데이트
+    prev_un_pts_map = cur_un_pts_map;
+    
+    prevLeftPtsMap.clear();
+    for (size_t i = 0; i < cur_pts.size(); i++)
+        prevLeftPtsMap[ids[i]] = cur_pts[i];
+
+    // 이전 라이다 점들 저장
+    // PUB_THIS_FRAME은 pubLidarFrame 결정을 위한 플래그
+    PUB_THIS_FRAME = false;
+
+    // 라이다 데이터가 있는 경우 처리
+    if (use_lidar && PUB_THIS_FRAME) {
+        // 현재 프레임이 발행되는 경우에만 라이다 데이터 처리
+        
+        // 라이다-카메라 정합 처리
+        if (!lidar_cloud->empty() && !forw_pts.empty()) {
+            std::vector<geometry_msgs::msg::Point32> curr_features;
+            
+            // 현재 특징점을 geometry_msgs::Point32로 변환
+            for (const auto& pt : forw_pts) {
+                geometry_msgs::msg::Point32 p;
+                p.x = pt.x;
+                p.y = pt.y;
+                p.z = 0;
+                curr_features.push_back(p);
+            }
+            
+            // 정합 수행
+            std::vector<std::pair<Eigen::Vector3d, Eigen::Vector3d>> matches = 
+                lidar_camera_projection(lidar_cloud, curr_features);
+                
+            // 결과 처리
+            for (size_t i = 0; i < matches.size(); i++) {
+                if (i < ids.size()) {
+                    feature_3d_points[ids[i]] = matches[i].first;
+                }
+            }
+        }
+        
+        // 데이터 처리 후 플래그 리셋
+        use_lidar = false;
+    }
 }
 
 void FeatureTracker::rejectWithF()
 {
     if (forw_pts.size() >= 8)
     {
-        ROS_DEBUG("FM ransac begins");
+        // RCLCPP_DEBUG(this->get_logger(), "FM ransac begins");
         TicToc t_f;
         vector<cv::Point2f> un_cur_pts(cur_pts.size()), un_forw_pts(forw_pts.size());
         for (unsigned int i = 0; i < cur_pts.size(); i++)
@@ -196,8 +335,8 @@ void FeatureTracker::rejectWithF()
         reduceVector(cur_un_pts, status);
         reduceVector(ids, status);
         reduceVector(track_cnt, status);
-        ROS_DEBUG("FM ransac: %d -> %lu: %f", size_a, forw_pts.size(), 1.0 * forw_pts.size() / size_a);
-        ROS_DEBUG("FM ransac costs: %fms", t_f.toc());
+        // RCLCPP_DEBUG(this->get_logger(), "FM ransac: %d -> %lu: %f", size_a, forw_pts.size(), 1.0 * forw_pts.size() / size_a);
+        // RCLCPP_DEBUG(this->get_logger(), "FM ransac costs: %fms", t_f.toc());
     }
 }
 
@@ -215,7 +354,8 @@ bool FeatureTracker::updateID(unsigned int i)
 
 void FeatureTracker::readIntrinsicParameter(const string &calib_file)
 {
-    ROS_INFO("reading paramerter of camera %s", calib_file.c_str());
+    // RCLCPP_INFO(this->get_logger(), "reading paramerter of camera %s", calib_file.c_str());
+    
     m_camera = CameraFactory::instance()->generateCameraFromYamlFile(calib_file);
 }
 
@@ -303,4 +443,105 @@ void FeatureTracker::undistortedPoints()
         }
     }
     prev_un_pts_map = cur_un_pts_map;
+}
+
+double getCurrentTime()
+{
+    struct timespec tv;
+    clock_gettime(CLOCK_REALTIME, &tv);
+    return tv.tv_sec + tv.tv_nsec * 1e-9;
+}
+
+// PCL 콜백 구현
+void FeatureTracker::pcl_callback(const sensor_msgs::msg::PointCloud2::SharedPtr lidar_msg, 
+                                 const std::vector<geometry_msgs::msg::Point32>& features_2d)
+{
+    // 클라우드 변환
+    pcl::PointCloud<PointType>::Ptr cloud(new pcl::PointCloud<PointType>());
+    pcl::fromROSMsg(*lidar_msg, *cloud);
+    
+    // 타임스탬프 설정
+    lidar_timestamp = lidar_msg->header.stamp.sec + lidar_msg->header.stamp.nanosec * 1e-9;
+    
+    // 특징점 2D 좌표 저장
+    feature_2d_points = features_2d;
+    
+    // 라이다 포인트 클라우드 복사
+    *lidar_cloud = *cloud;
+    
+    // 라이다 데이터 사용 플래그 설정
+    use_lidar = true;
+    
+    // 3D-2D 정합 수행
+    std::vector<std::pair<Eigen::Vector3d, Eigen::Vector3d>> matches = 
+        lidar_camera_projection(cloud, features_2d);
+    
+    // 정합 결과 처리
+    for (size_t i = 0; i < matches.size(); i++) {
+        // 3D 특징점 저장 (ID를 키로 사용)
+        if (i < ids.size()) {
+            feature_3d_points[ids[i]] = matches[i].first;
+        }
+    }
+}
+
+// 라이다-카메라 정합 구현
+bool FeatureTracker::inLidarFOV(const pcl::PointXYZI& p, const geometry_msgs::msg::Point32& cam_p)
+{
+    // 라이다 FOV 확인 (카메라 이미지 내에 투영될 수 있는지)
+    float cam_x = cam_p.x;
+    float cam_y = cam_p.y;
+    
+    // 간단한 투영 확인: 이미지 크기 내에 있는지 확인
+    return (0 <= cam_x && cam_x < COL && 0 <= cam_y && cam_y < ROW);
+}
+
+std::vector<std::pair<Eigen::Vector3d, Eigen::Vector3d>> FeatureTracker::lidar_camera_projection(
+    const pcl::PointCloud<pcl::PointXYZI>::Ptr& cloud, 
+    const std::vector<geometry_msgs::msg::Point32>& features)
+{
+    std::vector<std::pair<Eigen::Vector3d, Eigen::Vector3d>> matches;
+    
+    // 라이다 클라우드가 비어있거나 특징점이 없는 경우
+    if (cloud->empty() || features.empty()) {
+        return matches;
+    }
+    
+    // 각 특징점에 대해 가장 가까운 라이다 포인트 검색
+    for (const auto& feature : features) {
+        float min_dist = 10.0; // 최대 거리 임계값
+        int min_idx = -1;
+        
+        // 단순 선형 탐색 (k-d 트리로 최적화 가능)
+        for (size_t i = 0; i < cloud->size(); i++) {
+            const auto& pt = cloud->points[i];
+            
+            // 라이다 FOV 확인
+            if (!inLidarFOV(pt, feature)) {
+                continue;
+            }
+            
+            // 2D 거리 계산 (특징점 좌표계에서)
+            float dx = feature.x - pt.x;
+            float dy = feature.y - pt.y;
+            float dist = std::sqrt(dx*dx + dy*dy);
+            
+            // 최소 거리 업데이트
+            if (dist < min_dist) {
+                min_dist = dist;
+                min_idx = i;
+            }
+        }
+        
+        // 일치하는 포인트 찾은 경우
+        if (min_idx >= 0) {
+            const auto& pt = cloud->points[min_idx];
+            Eigen::Vector3d pt3d(pt.x, pt.y, pt.z);
+            Eigen::Vector3d pt2d(feature.x, feature.y, 0); // 2D 좌표
+            
+            matches.push_back(std::make_pair(pt3d, pt2d));
+        }
+    }
+    
+    return matches;
 }

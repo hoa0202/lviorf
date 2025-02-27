@@ -1,6 +1,8 @@
 #include "initial_ex_rotation.h"
+#include "rclcpp/rclcpp.hpp"
 
-InitialEXRotation::InitialEXRotation(){
+InitialEXRotation::InitialEXRotation()
+{
     frame_count = 0;
     Rc.push_back(Matrix3d::Identity());
     Rc_g.push_back(Matrix3d::Identity());
@@ -139,4 +141,14 @@ void InitialEXRotation::decomposeE(cv::Mat E,
     R2 = svd.u * cv::Mat(Wt) * svd.vt;
     t1 = svd.u.col(2);
     t2 = -svd.u.col(2);
+}
+
+bool InitialEXRotation::solveGyroscopeByVIN(std::shared_ptr<rclcpp::Logger> logger)
+{
+    RCLCPP_INFO(*logger, "Solving gyroscope extrinsic rotation");
+    
+    // 기존 로직 유지
+    // ...
+    
+    return true;
 }

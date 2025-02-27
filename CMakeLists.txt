@@ -1,144 +1,186 @@
-cmake_minimum_required(VERSION 2.8.3)
+cmake_minimum_required(VERSION 3.8)
 project(lviorf)
 
-set(CMAKE_BUILD_TYPE "Release")
-# set(CMAKE_CXX_FLAGS "-std=c++11")
-set(CMAKE_CXX_FLAGS "-std=c++14")
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -g -pthread")
+# 기본 C++ 표준 설정
+set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(catkin REQUIRED COMPONENTS
-  tf
-  roscpp
-  rospy
-  roslib
-  cv_bridge
-  # pcl library
-  pcl_conversions
-  # msgs
-  std_msgs
-  sensor_msgs
-  geometry_msgs
-  nav_msgs
-  message_generation
-  visualization_msgs
+# 컴파일 옵션 설정
+add_compile_options(-Wall -Wextra -Wpedantic)
+
+# GTSAM 링크 관련 정책 설정
+if(POLICY CMP0074)
+  cmake_policy(SET CMP0074 NEW)
+endif()
+
+# ament 패키지 찾기
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(tf2_eigen REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
+find_package(pcl_conversions REQUIRED)
+find_package(cv_bridge REQUIRED)
+find_package(visualization_msgs REQUIRED)
+
+# PCL 및 기타 라이브러리 찾기
+find_package(PCL REQUIRED)
+find_package(OpenCV REQUIRED)
+find_package(Eigen3 REQUIRED)
+
+# GeographicLib 찾기 - pkg-config 사용 (이미 설치됨)
+find_package(PkgConfig QUIET)
+if(PKG_CONFIG_FOUND)
+  pkg_check_modules(GEOGRAPHIC QUIET geographiclib)
+  if(GEOGRAPHIC_FOUND)
+    # pkg-config로 찾은 경우 해당 변수 설정
+    set(GeographicLib_INCLUDE_DIRS ${GEOGRAPHIC_INCLUDE_DIRS})
+    set(GeographicLib_LIBRARIES ${GEOGRAPHIC_LIBRARIES})
+    message(STATUS "GeographicLib 발견: ${GeographicLib_LIBRARIES}")
+  else()
+    # 직접 경로 지정 (Ubuntu 일반적인 경로)
+    message(STATUS "pkg-config로 GeographicLib을 찾지 못했습니다. 직접 경로 설정")
+    set(GeographicLib_INCLUDE_DIRS "/usr/include")
+    set(GeographicLib_LIBRARIES "Geographic")
+  endif()
+else()
+  # pkg-config가 없는 경우 직접 설정
+  set(GeographicLib_INCLUDE_DIRS "/usr/include")
+  set(GeographicLib_LIBRARIES "Geographic")
+endif()
+
+# GTSAM 찾기 - 상세 설정 추가
+find_package(GTSAM REQUIRED)
+if(NOT GTSAM_FOUND)
+  message(FATAL_ERROR "GTSAM을 찾을 수 없습니다. 설치 여부를 확인하세요.")
+endif()
+
+# GTSAM 링크 디렉토리 명시적 추가
+link_directories(${GTSAM_LIBRARY_DIRS})
+
+# common_lib 라이브러리 추가
+add_library(common_lib SHARED 
+  lib/common_lib.cpp
 )
 
-find_package(OpenMP REQUIRED)
-find_package(PCL REQUIRED QUIET)
-find_package(OpenCV REQUIRED QUIET)
-find_package(GTSAM REQUIRED QUIET)
-find_package(Ceres REQUIRED)
-find_package(Boost REQUIRED COMPONENTS timer)
-
-set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "/usr/share/cmake/geographiclib/")
-find_package(GeographicLib REQUIRED)
-
-add_message_files(
-  DIRECTORY msg
-  FILES
-  cloud_info.msg
+# common_lib에 필요한 의존성 추가
+target_include_directories(common_lib
+  PUBLIC
+    include
+    ${PCL_INCLUDE_DIRS}
+    ${EIGEN3_INCLUDE_DIRS}
+    ${PROJECT_SOURCE_DIR}/lib
+    ${GeographicLib_INCLUDE_DIRS}  # GeographicLib 포함 경로 추가
 )
 
-add_service_files(
-  DIRECTORY srv
-  FILES
-  save_map.srv
+target_link_libraries(common_lib
+  ${PCL_LIBRARIES}
+  ${EIGEN3_LIBRARIES}
+  ${rclcpp_LIBRARIES}
+  ${GeographicLib_LIBRARIES}  # GeographicLib 링크
 )
 
-generate_messages(
-  DEPENDENCIES
-  geometry_msgs
-  std_msgs
-  nav_msgs
-  sensor_msgs
+# 인터페이스 생성
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/CloudInfo.msg"
+  "srv/SaveMap.srv"
+  DEPENDENCIES std_msgs sensor_msgs geometry_msgs
 )
 
-catkin_package(
-  INCLUDE_DIRS include
-  DEPENDS PCL GTSAM
-
-  CATKIN_DEPENDS
-  std_msgs
-  nav_msgs
-  geometry_msgs
-  sensor_msgs
-  message_runtime
-  message_generation
-  visualization_msgs
+# 실행 파일 목록
+add_executable(${PROJECT_NAME}_imageProjection_node
+  src/lio/imageProjection.cpp
 )
 
-# include directories
-include_directories(
-  lib
-	include
-	${catkin_INCLUDE_DIRS}
-	${PCL_INCLUDE_DIRS}
-  ${CERES_INCLUDE_DIRS}
-  ${OpenCV_INCLUDE_DIRS}
-	${GTSAM_INCLUDE_DIR}
+add_executable(${PROJECT_NAME}_mapOptimization_node
+  src/lio/mapOptmization.cpp  
 )
 
-# link directories
-link_directories(
-  lib
-	include
-	${PCL_LIBRARY_DIRS}
-  ${OpenCV_LIBRARY_DIRS}
-  ${GTSAM_LIBRARY_DIRS}
+# laserMapping 노드 제거 (원래 없는 파일)
+# add_executable(${PROJECT_NAME}_laserMapping_node
+#   src/lio/laserMapping.cpp  
+# )
+
+# 정의된 대상에 의존성 추가
+ament_target_dependencies(${PROJECT_NAME}_imageProjection_node
+  rclcpp std_msgs sensor_msgs nav_msgs geometry_msgs tf2 tf2_ros pcl_conversions
+  tf2_eigen tf2_geometry_msgs visualization_msgs cv_bridge
 )
 
-###########
-## Build ##
-###########
-# <!-- lviorf_yjz_lucky_boy -->
-file(GLOB common_lib "lib/*.cpp")
-
-# LIO
-# Range Image Projection
-add_executable(${PROJECT_NAME}_imageProjection src/lio/imageProjection.cpp ${common_lib})
-add_dependencies(${PROJECT_NAME}_imageProjection ${catkin_EXPORTED_TARGETS} ${PROJECT_NAME}_generate_messages_cpp)
-target_link_libraries(${PROJECT_NAME}_imageProjection ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES})
-
-# Mapping Optimization
-add_executable(${PROJECT_NAME}_mapOptmization src/lio/mapOptmization.cpp ${common_lib})
-add_dependencies(${PROJECT_NAME}_mapOptmization ${catkin_EXPORTED_TARGETS} ${PROJECT_NAME}_generate_messages_cpp)
-target_compile_options(${PROJECT_NAME}_mapOptmization PRIVATE ${OpenMP_CXX_FLAGS})
-target_link_libraries(${PROJECT_NAME}_mapOptmization Boost::timer ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} ${OpenMP_CXX_FLAGS} ${GeographicLib_LIBRARIES} gtsam)
-
-# IMU Preintegration
-add_executable(${PROJECT_NAME}_imuPreintegration src/lio/imuPreintegration.cpp ${common_lib})
-target_link_libraries(${PROJECT_NAME}_imuPreintegration Boost::timer ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} gtsam)
-
-
-######################
-# <!-- lviorf_yjz_lucky_boy -->
-# VIO
-######################
-file(GLOB visual_feature_files
-    "src/vio/visual_feature/*.cpp"
-    "src/vio/visual_feature/camera_models/*.cc"
+ament_target_dependencies(${PROJECT_NAME}_mapOptimization_node
+  rclcpp std_msgs sensor_msgs nav_msgs geometry_msgs tf2 tf2_ros pcl_conversions
+  tf2_eigen tf2_geometry_msgs visualization_msgs 
 )
-file(GLOB visual_odometry_files
-    "src/vio/visual_estimator/*.cpp"
-    "src/vio/visual_estimator/factor/*.cpp"
-    "src/vio/visual_estimator/initial/*.cpp"
-    "src/vio/visual_estimator/utility/*.cpp"
+
+# 헤더 디렉토리 지정
+target_include_directories(${PROJECT_NAME}_imageProjection_node
+  PRIVATE
+    ${PCL_INCLUDE_DIRS}
+    ${OpenCV_INCLUDE_DIRS}
+    ${EIGEN3_INCLUDE_DIRS}
+    ${GTSAM_INCLUDE_DIRS}
+    ${GeographicLib_INCLUDE_DIRS}  # GeographicLib 포함 경로 추가
+    include
 )
-file(GLOB visual_loop_files
-    "src/vio/visual_loop/*.cpp"
-    "src/vio/visual_loop/utility/*.cpp"
-    "src/vio/visual_loop/ThirdParty/*.cpp"
-    "src/vio/visual_loop/ThirdParty/DBoW/*.cpp"
-    "src/vio/visual_loop/ThirdParty/DUtils/*.cpp"
-    "src/vio/visual_loop/ThirdParty/DVision/*.cpp"
-    "src/vio/visual_feature/camera_models/*.cc"
+
+target_include_directories(${PROJECT_NAME}_mapOptimization_node
+  PRIVATE
+    ${PCL_INCLUDE_DIRS}
+    ${OpenCV_INCLUDE_DIRS}
+    ${EIGEN3_INCLUDE_DIRS}
+    ${GTSAM_INCLUDE_DIRS}
+    ${GeographicLib_INCLUDE_DIRS}  # GeographicLib 포함 경로 추가
+    include
 )
-# Visual Feature Tracker
-add_executable(${PROJECT_NAME}_visual_feature ${visual_feature_files})
-target_link_libraries(${PROJECT_NAME}_visual_feature ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBS} ${CERES_LIBRARIES})
-# Visual Odometry
-add_executable(${PROJECT_NAME}_visual_odometry ${visual_odometry_files})
-target_link_libraries(${PROJECT_NAME}_visual_odometry ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBS} ${CERES_LIBRARIES}) 
-# Visual Lopp
-add_executable(${PROJECT_NAME}_visual_loop ${visual_loop_files})
-target_link_libraries(${PROJECT_NAME}_visual_loop ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBS} ${CERES_LIBRARIES}) 
+
+# 링크 라이브러리 지정
+target_link_libraries(${PROJECT_NAME}_imageProjection_node
+  ${PCL_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+  ${EIGEN3_LIBRARIES}
+  gtsam
+  gtsam_unstable
+  ${GeographicLib_LIBRARIES}  # GeographicLib 링크
+  ${${PROJECT_NAME}_LIBRARIES}
+  common_lib
+)
+
+target_link_libraries(${PROJECT_NAME}_mapOptimization_node
+  ${PCL_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+  ${EIGEN3_LIBRARIES}
+  gtsam
+  gtsam_unstable
+  ${GeographicLib_LIBRARIES}  # GeographicLib 링크
+  ${${PROJECT_NAME}_LIBRARIES}
+  common_lib
+)
+
+# 인터페이스 의존성 추가
+rosidl_target_interfaces(${PROJECT_NAME}_imageProjection_node
+  ${PROJECT_NAME} "rosidl_typesupport_cpp")
+
+rosidl_target_interfaces(${PROJECT_NAME}_mapOptimization_node
+  ${PROJECT_NAME} "rosidl_typesupport_cpp")
+
+# 설치 규칙
+install(TARGETS
+  ${PROJECT_NAME}_imageProjection_node
+  ${PROJECT_NAME}_mapOptimization_node
+  common_lib
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY
+  launch
+  config
+  DESTINATION share/${PROJECT_NAME}
+)
+
+# ament 패키지 마무리
+ament_package() 

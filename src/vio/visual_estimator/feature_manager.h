@@ -1,5 +1,4 @@
-#ifndef FEATURE_MANAGER_H
-#define FEATURE_MANAGER_H
+#pragma once
 
 #include <list>
 #include <algorithm>
@@ -10,8 +9,8 @@ using namespace std;
 #include <eigen3/Eigen/Dense>
 using namespace Eigen;
 
-#include <ros/console.h>
-#include <ros/assert.h>
+#include <opencv2/opencv.hpp>
+#include "rclcpp/logging.hpp"
 
 #include "parameters.h"
 
@@ -111,5 +110,3 @@ class FeatureManager
     const Matrix3d *Rs;
     Matrix3d ric[NUM_OF_CAM];
 };
-
-#endif

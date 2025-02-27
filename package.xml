@@ -1,51 +1,33 @@
 <?xml version="1.0"?>
-<package>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
   <name>lviorf</name>
-  <version>1.0.0</version>
-  <description>Lidar Odometry</description>
-  <!-- lviorf_yjz_lucky_boy -->
-  <maintainer email="shant@mit.edu">Tixiao Shan</maintainer>
+  <version>0.0.0</version>
+  <description>LVI-ORF ROS2 포팅</description>
+  <maintainer email="user@example.com">Your Name</maintainer>
+  <license>TODO: License declaration</license>
 
-  <license>TODO</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  
+  <depend>rclcpp</depend>
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>cv_bridge</depend>
+  <depend>pcl_conversions</depend>
+  <depend>message_filters</depend>
+  
+  <!-- 메시지 생성에 필요한 의존성 -->
+  <build_depend>rosidl_default_generators</build_depend>
+  <exec_depend>rosidl_default_runtime</exec_depend>
+  <member_of_group>rosidl_interface_packages</member_of_group>
 
-  <author>Tixiao Shan</author>
-
-  <buildtool_depend>catkin</buildtool_depend>
-
-  <build_depend>roscpp</build_depend>
-  <run_depend>roscpp</run_depend>
-  <build_depend>rospy</build_depend>
-  <run_depend>rospy</run_depend>
-
-  <build_depend>roslib</build_depend>
-  <run_depend>roslib</run_depend>
-
-  <build_depend>tf</build_depend>
-  <run_depend>tf</run_depend>
-
-  <build_depend>cv_bridge</build_depend>
-  <run_depend>cv_bridge</run_depend>
-
-  <build_depend>pcl_conversions</build_depend>
-  <run_depend>pcl_conversions</run_depend>
-
-  <build_depend>std_msgs</build_depend>
-  <run_depend>std_msgs</run_depend>
-  <build_depend>sensor_msgs</build_depend>
-  <run_depend>sensor_msgs</run_depend>
-  <build_depend>geometry_msgs</build_depend>
-  <run_depend>geometry_msgs</run_depend>
-  <build_depend>nav_msgs</build_depend>
-  <run_depend>nav_msgs</run_depend>
-  <build_depend>visualization_msgs</build_depend>
-  <run_depend>visualization_msgs</run_depend>
-
-  <build_depend>message_generation</build_depend>
-  <run_depend>message_generation</run_depend>
-  <build_depend>message_runtime</build_depend>
-  <run_depend>message_runtime</run_depend>
-
-  <build_depend>GTSAM</build_depend>
-  <run_depend>GTSAM</run_depend>
-
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
 </package>

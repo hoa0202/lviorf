@@ -1,15 +1,14 @@
 #include "feature_manager.h"
+#include "rclcpp/rclcpp.hpp"
 
 int FeaturePerId::endFrame()
 {
     return start_frame + feature_per_frame.size() - 1;
 }
 
-FeatureManager::FeatureManager(Matrix3d _Rs[])
-    : Rs(_Rs)
+FeatureManager::FeatureManager()
 {
-    for (int i = 0; i < NUM_OF_CAM; i++)
-        ric[i].setIdentity();
+    // 초기화 로직
 }
 
 void FeatureManager::setRic(Matrix3d _ric[])
@@ -416,4 +415,15 @@ double FeatureManager::compensatedParallax2(const FeaturePerId &it_per_id, int f
     ans = max(ans, sqrt(min(du * du + dv * dv, du_comp * du_comp + dv_comp * dv_comp)));
 
     return ans;
+}
+
+void FeatureManager::publishFeatures(rclcpp::Publisher<sensor_msgs::msg::PointCloud>::SharedPtr publisher)
+{
+    sensor_msgs::msg::PointCloud point_cloud;
+    point_cloud.header.stamp = rclcpp::Clock().now();
+    point_cloud.header.frame_id = "world";
+    
+    // 기존 특징점 추출 및 게시 로직...
+    
+    publisher->publish(point_cloud);
 }

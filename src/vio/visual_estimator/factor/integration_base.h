@@ -6,6 +6,11 @@
 #include <ceres/ceres.h>
 using namespace Eigen;
 
+#include <Eigen/Dense>
+#include <cstdlib>
+#include <cmath>
+#include <vector>
+
 /**
 * @class IntegrationBase IMU pre-integration class
 * @Description 
@@ -237,5 +242,16 @@ class IntegrationBase
         residuals.block<3, 1>(O_BA, 0) = Baj - Bai;
         residuals.block<3, 1>(O_BG, 0) = Bgj - Bgi;
         return residuals;
+    }
+
+    // ROS 로깅 관련 부분 수정
+    void printStatistics(std::shared_ptr<rclcpp::Logger> logger)
+    {
+        // ROS1: ROS_INFO
+        // ROS2: RCLCPP_INFO
+        RCLCPP_INFO(*logger, "IMU Preintegration statistics:");
+        RCLCPP_INFO(*logger, "Acc bias: %f %f %f", acc_0(0), acc_0(1), acc_0(2));
+        RCLCPP_INFO(*logger, "Gyr bias: %f %f %f", gyr_0(0), gyr_0(1), gyr_0(2));
+        // 나머지 로깅...
     }
 };
