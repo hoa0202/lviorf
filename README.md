@@ -1,24 +1,28 @@
 1. GTSAM Vector.h 파일 수정
-'''
-sudo vi /usr/local/include/gtsam/base/Vector.h
-'''
+
+  ```
+    sudo vi /usr/local/include/gtsam/base/Vector.h
+
+  ```
 파일에서 75번째 줄 근처에 다음과 같은 코드를 찾습니다:
-'''
-static_assert(
-    GTSAM_EIGEN_VERSION_MAJOR==EIGEN_MAJOR_VERSION,
-    "Error: GTSAM was built against a different version of Eigen");
-'''
+
+  ```
+    static_assert(
+        GTSAM_EIGEN_VERSION_MAJOR==EIGEN_MAJOR_VERSION,
+        "Error: GTSAM was built against a different version of Eigen");
+
+  ```
 이를 다음과 같이 주석 처리하거나 수정합니다:
 
-'''
-// 버전 검사 무시
-// static_assert(
-//     GTSAM_EIGEN_VERSION_MAJOR==EIGEN_MAJOR_VERSION,
-//     "Error: GTSAM was built against a different version of Eigen");
-'''
+
+  ```
+    // 버전 검사 무시
+    // static_assert(
+    //     GTSAM_EIGEN_VERSION_MAJOR==EIGEN_MAJOR_VERSION,
+    //     "Error: GTSAM was built against a different version of Eigen");
   ```
     sudo apt-get update
-sudo apt-get install libgtsam-unstable-dev
+    sudo apt-get install libgtsam-unstable-dev
   ```
 
 
