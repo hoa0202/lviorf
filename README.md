@@ -16,7 +16,10 @@ static_assert(
 //     GTSAM_EIGEN_VERSION_MAJOR==EIGEN_MAJOR_VERSION,
 //     "Error: GTSAM was built against a different version of Eigen");
 '''
-
+  ```
+    sudo apt-get update
+sudo apt-get install libgtsam-unstable-dev
+  ```
 
 
 # New Feature
